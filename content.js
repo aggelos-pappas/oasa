@@ -7,6 +7,11 @@ window.addEventListener('DOMContentLoaded', () => {
 // Fetch lines data from OASA API via background script to avoid CORS
 let lines_data = null;
 let routeNameCache = Object.create(null);
+let oasaRefreshTimer = null;
+let oasaCurrentStop = null;
+let oasaStopObserverStarted = false;
+let oasaStopObserver = null;
+let oasaStopDebounceTimer = null;
 chrome.runtime.sendMessage(
     {
         type: 'OASA_FETCH',
@@ -46,52 +51,250 @@ function findStopCodeInPanel() {
 }
 
 function showArrivalsPopup(stopcode, arrivalsHtml) {
-	let popup = document.getElementById('oasa-arrivals-popup');
-	if (!popup) {
-		popup = document.createElement('div');
-		popup.id = 'oasa-arrivals-popup';
-		popup.style = `
-			position:fixed;top:120px;right:25px;
-			z-index:9999;
-			padding:0;
-			min-width:240px;
-			background:#0130a6;
-			border-radius:10px;
-			box-shadow:0 4px 16px #222;
-			color:#fff;
-			font-family:sans-serif;
-			overflow:hidden;
-		`;
+    let popup = document.getElementById('oasa-arrivals-popup');
+    if (!popup) {
+        popup = document.createElement('div');
+        popup.id = 'oasa-arrivals-popup';
+        popup.style = `
+            position:fixed;top:120px;right:25px;
+            z-index:9999;
+            padding:0;
+            min-width:240px;
+            background:#0130a6;
+            border-radius:10px;
+            box-shadow:0 4px 16px #222;
+            color:#fff;
+            font-family:sans-serif;
+            overflow:hidden;
+        `;
 
-		// Add OASA logo in the lower left corner
-		const logo = document.createElement('img');
-		logo.src = 'https://www.gov.gr/media/organization/logo/2021/11/24/oasa_vU1TpxQ.png';
-		logo.alt = 'OASA logo';
-		logo.style.position = 'absolute';
-		logo.style.left = '15px';
-		logo.style.bottom = '10px';
-		logo.style.width = '48px';
-        logo.style.border = '1px solid #fff';
-		logo.style.height = 'auto';
-		logo.style.backgroundColor = 'white';
-		logo.style.borderRadius = '6px';
-		logo.style.boxShadow = '0 2px 8px #2224';
-		logo.style.padding = '2px';
+        // Create persistent structure: top handle, content, bottom handle, close, logo
+        const topHandle = document.createElement('div');
+        topHandle.id = 'oasa-popup-handle-top';
+        topHandle.style.cssText = 'height:16px; cursor:grab; background:#0a3dd0; display:flex; align-items:center; justify-content:center;';
+        // 3x2 grip icon (six dots) centered in the handle
+        const gripSvgNS = 'http://www.w3.org/2000/svg';
+        const grip = document.createElementNS(gripSvgNS, 'svg');
+        grip.setAttribute('width', '18');
+        grip.setAttribute('height', '12');
+        grip.setAttribute('viewBox', '0 0 18 12');
+        const dotPositions = [ [3,4], [9,4], [15,4], [3,8], [9,8], [15,8] ];
+        dotPositions.forEach(([cx, cy]) => {
+            const c = document.createElementNS(gripSvgNS, 'circle');
+            c.setAttribute('cx', String(cx));
+            c.setAttribute('cy', String(cy));
+            c.setAttribute('r', '1.5');
+            c.setAttribute('fill', '#ffffff');
+            c.setAttribute('fill-opacity', '0.95');
+            grip.appendChild(c);
+        });
+        topHandle.appendChild(grip);
 
-		popup.appendChild(logo);
+        const contentContainer = document.createElement('div');
+        contentContainer.id = 'oasa-popup-content';
+        contentContainer.style.cssText = 'position:relative; overflow:visible;';
 
-		document.body.appendChild(popup);
-	}
+        // Fade overlay for scroll hint
+        const fade = document.createElement('div');
+        fade.id = 'oasa-popup-fade';
+        fade.style.cssText = 'position:absolute;left:0;right:0;bottom:0;height:24px;background:linear-gradient(180deg, rgba(1,48,166,0) 0%, #0130a6 90%);pointer-events:none;display:none;';
+        contentContainer.appendChild(fade);
 
-	let html = '';
-	if (arrivalsHtml && arrivalsHtml.length) {
-		html = arrivalsHtml;
-	} else {
-		html = '<div style="padding:16px 12px;">No arrivals.</div>';
-	}
-	popup.innerHTML = html + `
-		<button onclick="document.getElementById('oasa-arrivals-popup').remove();" style="all:unset;float:right;cursor:pointer;font-size:1.2em;padding:10px;color:#fff;">✕</button>
-	`;
+        // Footer with full-width logo (also acts as bottom drag handle)
+        const footer = document.createElement('div');
+        footer.id = 'oasa-popup-footer';
+        footer.style.cssText = 'position:relative;height:56px;cursor:grab;overflow:hidden;border-top:1px solid #1a287c;display:flex;align-items:center;';
+        const logo = document.createElement('img');
+        logo.src = 'https://www.gov.gr/media/organization/logo/2021/11/24/oasa_vU1TpxQ.png';
+        logo.alt = 'OASA logo';
+        logo.style.cssText = 'height:50%;background:white;width:auto;margin-left:1em;';
+        logo.style.borderRadius = '6px';
+        logo.style.boxShadow = '0 2px 8px #2224';
+        logo.style.padding = '2px';
+        footer.appendChild(logo);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.textContent = '✕';
+        closeBtn.style.cssText = 'all:unset;position:absolute;bottom:6px;right:8px;cursor:pointer;font-size:1.2em;padding:6px 8px;color:#fff;text-shadow:0 1px 2px #000;';
+        closeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            popup.remove();
+            if (oasaRefreshTimer) {
+                clearInterval(oasaRefreshTimer);
+                oasaRefreshTimer = null;
+            }
+        });
+
+        popup.appendChild(topHandle);
+        popup.appendChild(contentContainer);
+        popup.appendChild(footer);
+        popup.appendChild(closeBtn);
+
+        // Attach drag behavior for both handles (top and footer)
+        makePopupDraggable(popup, [topHandle, footer]);
+
+        document.body.appendChild(popup);
+
+        // Start auto-refresh after creating the popup
+        ensureArrivalsAutoRefresh();
+        // Inject minimal scrollbar styling once
+        ensureMinimalScrollbarStyles();
+    }
+
+    // Update content only
+    const content = document.getElementById('oasa-popup-content');
+    let html = '';
+    if (arrivalsHtml && arrivalsHtml.length) {
+        html = arrivalsHtml;
+    } else {
+        html = '<div style="padding:16px 12px;">No arrivals.</div>';
+    }
+    if (content) {
+        content.innerHTML = html;
+        applyScrollableBehavior(content);
+    }
+}
+
+function ensureArrivalsAutoRefresh() {
+    if (oasaRefreshTimer) return;
+    oasaRefreshTimer = setInterval(() => {
+        const popup = document.getElementById('oasa-arrivals-popup');
+        if (!popup) {
+            clearInterval(oasaRefreshTimer);
+            oasaRefreshTimer = null;
+            return;
+        }
+        if (oasaCurrentStop) {
+            fetchAndShowArrivals(oasaCurrentStop);
+        }
+    }, 20000);
+}
+
+function makePopupDraggable(popup, handles) {
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    function ensureLeftTopPositioning() {
+        const rect = popup.getBoundingClientRect();
+        const computed = window.getComputedStyle(popup);
+        const hasRight = computed.right !== 'auto' && computed.right !== '';
+        if (hasRight) {
+            popup.style.left = rect.left + 'px';
+            popup.style.top = rect.top + 'px';
+            popup.style.right = 'auto';
+        }
+    }
+
+    function onPointerDown(clientX, clientY) {
+        ensureLeftTopPositioning();
+        isDragging = true;
+        const rect = popup.getBoundingClientRect();
+        startX = clientX;
+        startY = clientY;
+        startLeft = rect.left;
+        startTop = rect.top;
+        document.body.style.userSelect = 'none';
+    }
+
+    function onPointerMove(clientX, clientY) {
+        if (!isDragging) return;
+        const dx = clientX - startX;
+        const dy = clientY - startY;
+        const newLeft = startLeft + dx;
+        const newTop = startTop + dy;
+        const rect = popup.getBoundingClientRect();
+        const width = rect.width;
+        const height = rect.height;
+        const maxLeft = Math.max(0, window.innerWidth - width);
+        const maxTop = Math.max(0, window.innerHeight - height);
+        popup.style.left = Math.min(Math.max(0, newLeft), maxLeft) + 'px';
+        popup.style.top = Math.min(Math.max(0, newTop), maxTop) + 'px';
+    }
+
+    function onPointerUp() {
+        if (!isDragging) return;
+        isDragging = false;
+        document.body.style.userSelect = '';
+    }
+
+    handles.forEach((h) => {
+        h.addEventListener('mousedown', (e) => {
+            onPointerDown(e.clientX, e.clientY);
+        });
+        h.addEventListener('touchstart', (e) => {
+            const t = e.touches && e.touches[0];
+            if (!t) return;
+            onPointerDown(t.clientX, t.clientY);
+        }, { passive: true });
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        onPointerMove(e.clientX, e.clientY);
+    });
+    window.addEventListener('touchmove', (e) => {
+        const t = e.touches && e.touches[0];
+        if (!t) return;
+        onPointerMove(t.clientX, t.clientY);
+    }, { passive: true });
+    window.addEventListener('mouseup', onPointerUp);
+    window.addEventListener('touchend', onPointerUp);
+}
+
+function applyScrollableBehavior(content) {
+    const fade = content.querySelector('#oasa-popup-fade');
+    const children = Array.from(content.children).filter(el => el.id !== 'oasa-popup-fade');
+    if (!children.length) {
+        content.style.overflowY = 'visible';
+        content.style.maxHeight = '';
+        if (fade) fade.style.display = 'none';
+        return;
+    }
+    if (children.length > 4) {
+        const firstRow = children[0];
+        const rowHeight = firstRow.getBoundingClientRect().height || 32;
+        const maxH = Math.round(rowHeight * 3.5);
+        content.style.overflowY = 'auto';
+        content.style.maxHeight = maxH + 'px';
+        if (fade) {
+            fade.style.height = Math.round(rowHeight * 0.6) + 'px';
+            const updateFade = () => {
+                const atBottom = Math.ceil(content.scrollTop + content.clientHeight) >= content.scrollHeight;
+                fade.style.display = atBottom ? 'none' : 'block';
+            };
+            updateFade();
+            content.removeEventListener('scroll', content.__oasaFadeListener);
+            content.__oasaFadeListener = () => updateFade();
+            content.addEventListener('scroll', content.__oasaFadeListener);
+        }
+    } else {
+        content.style.overflowY = 'visible';
+        content.style.maxHeight = '';
+        if (fade) fade.style.display = 'none';
+        if (content.__oasaFadeListener) {
+            content.removeEventListener('scroll', content.__oasaFadeListener);
+            content.__oasaFadeListener = null;
+        }
+    }
+}
+
+function ensureMinimalScrollbarStyles() {
+    if (document.getElementById('oasa-popup-scrollbar-style')) return;
+    const style = document.createElement('style');
+    style.id = 'oasa-popup-scrollbar-style';
+    style.textContent = `
+        /* Firefox */
+        #oasa-popup-content { scrollbar-width: thin; scrollbar-color: #1a4bd6 transparent; }
+        /* WebKit */
+        #oasa-popup-content::-webkit-scrollbar { width: 6px; }
+        #oasa-popup-content::-webkit-scrollbar-track { background: transparent; }
+        #oasa-popup-content::-webkit-scrollbar-thumb { background-color: #1a4bd6; border-radius: 6px; }
+        #oasa-popup-content::-webkit-scrollbar-thumb:hover { background-color: #2a5cf0; }
+    `;
+    document.head.appendChild(style);
 }
 function getLineNameAndNumber(routecode) {
 	const key = String(routecode || '');
@@ -122,6 +325,7 @@ function getLineNameAndNumber(routecode) {
 	});
 }
 function fetchAndShowArrivals(stopcode) {
+    oasaCurrentStop = stopcode;
     const url = `https://telematics.oasa.gr/api/?act=getStopArrivals&p1=${stopcode}`;
     console.log('[OASA] Fetching arrivals for stop', stopcode, '→', url);
     chrome.runtime.sendMessage(
@@ -187,4 +391,33 @@ document.body.addEventListener('click', () => {
         }
     }, 600); // delay to let panel DOM populate
 });
+
+// Continuously monitor DOM for the stop code span appearing/updates
+function startObservingStopCode() {
+    if (oasaStopObserverStarted) return;
+    oasaStopObserverStarted = true;
+    const observerCallback = () => {
+        if (oasaStopDebounceTimer) {
+            clearTimeout(oasaStopDebounceTimer);
+        }
+        oasaStopDebounceTimer = setTimeout(() => {
+            const stopcode = findStopCodeInPanel();
+            const popup = document.getElementById('oasa-arrivals-popup');
+            if (stopcode && stopcode !== oasaCurrentStop) {
+                fetchAndShowArrivals(stopcode);
+            } else if (stopcode && !popup) {
+                // If popup was closed but stop is visible, show it
+                fetchAndShowArrivals(stopcode);
+            }
+        }, 300);
+    };
+    oasaStopObserver = new MutationObserver(observerCallback);
+    try {
+        oasaStopObserver.observe(document.body, { subtree: true, childList: true, characterData: true });
+    } catch (e) {
+        // Some pages may restrict observing; ignore
+    }
+}
+
+startObservingStopCode();
 
