@@ -1,0 +1,23 @@
+{
+    "manifest_version": 3,
+    "name": "OASA Real-Time Bus Arrivals",
+    "version": "1.0",
+    "description": "Overlay real-time OASA bus arrival times on Google Maps.",
+    "host_permissions": [
+      "https://maps.google.com/*",
+      "https://telematics.oasa.gr/*"
+    ],
+  "background": {
+    "service_worker": "background.js"
+  },
+    "content_scripts": [
+      {
+      "matches": [
+        "https://www.google.com/maps/*",
+        "https://*.google.com/maps/*"
+      ],
+        "js": ["content.js"]
+      }
+    ]
+  }
+  
