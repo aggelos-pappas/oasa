@@ -30,8 +30,6 @@ chrome.runtime.sendMessage(
     }
 );
 
-
-
 function findStopCodeInPanel() {
     // Αναζητάμε το <span> που περιέχει το 'Αναγνωριστικό στάσης:'
     let span = Array.from(document.querySelectorAll('span')).find(
@@ -61,8 +59,9 @@ function showArrivalsPopup(stopcode, arrivalsHtml) {
             padding:0;
             min-width:240px;
             background:#0130a6;
+            border:1px solid rgba(255, 255, 255, 0.15);
             border-radius:10px;
-            box-shadow:0 4px 16px #222;
+            box-shadow:0 12px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2);
             color:#fff;
             font-family:sans-serif;
             overflow:hidden;
@@ -71,14 +70,14 @@ function showArrivalsPopup(stopcode, arrivalsHtml) {
         // Create persistent structure: top handle, content, bottom handle, close, logo
         const topHandle = document.createElement('div');
         topHandle.id = 'oasa-popup-handle-top';
-        topHandle.style.cssText = 'height:16px; cursor:grab; background:#0a3dd0; display:flex; align-items:center; justify-content:center;';
+        topHandle.style.cssText = 'height:16px; cursor:grab; background:rgba(255, 255, 255, 0.08); border-bottom:1px solid rgba(255, 255, 255, 0.12); display:flex; align-items:center; justify-content:center; box-sizing:border-box;';
         // 3x2 grip icon (six dots) centered in the handle
         const gripSvgNS = 'http://www.w3.org/2000/svg';
         const grip = document.createElementNS(gripSvgNS, 'svg');
         grip.setAttribute('width', '18');
         grip.setAttribute('height', '12');
         grip.setAttribute('viewBox', '0 0 18 12');
-        const dotPositions = [ [3,4], [9,4], [15,4], [3,8], [9,8], [15,8] ];
+        const dotPositions = [[3, 4], [9, 4], [15, 4], [3, 8], [9, 8], [15, 8]];
         dotPositions.forEach(([cx, cy]) => {
             const c = document.createElementNS(gripSvgNS, 'circle');
             c.setAttribute('cx', String(cx));
@@ -103,9 +102,9 @@ function showArrivalsPopup(stopcode, arrivalsHtml) {
         // Footer with full-width logo (also acts as bottom drag handle)
         const footer = document.createElement('div');
         footer.id = 'oasa-popup-footer';
-        footer.style.cssText = 'position:relative;height:56px;cursor:grab;overflow:hidden;border-top:1px solid #1a287c;display:flex;align-items:center;';
+        footer.style.cssText = 'position:relative;height:56px;cursor:grab;overflow:hidden;border-top:1px solid rgba(255, 255, 255, 0.15);background:rgba(255, 255, 255, 0.04);display:flex;align-items:center;';
         const logo = document.createElement('img');
-        logo.src = 'https://www.gov.gr/media/organization/logo/2021/11/24/oasa_vU1TpxQ.png';
+        logo.src = 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSRnTrCp_peuCPxpznasc2Rxv6On32eYY5K__nih-25RfYrQHdherGxc9mt&s=10';
         logo.alt = 'OASA logo';
         logo.style.cssText = 'height:50%;background:white;width:auto;margin-left:1em;';
         logo.style.borderRadius = '6px';
@@ -133,6 +132,17 @@ function showArrivalsPopup(stopcode, arrivalsHtml) {
 
         // Attach drag behavior for both handles (top and footer)
         makePopupDraggable(popup, [topHandle, footer]);
+
+        // Add radial hover spotlight effect
+        popup.addEventListener('mousemove', (e) => {
+            const rect = popup.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            popup.style.background = `radial-gradient(circle at ${x}px ${y}px, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0) 70%), #0130a6`;
+        });
+        popup.addEventListener('mouseleave', () => {
+            popup.style.background = '#0130a6';
+        });
 
         document.body.appendChild(popup);
 
@@ -287,43 +297,72 @@ function ensureMinimalScrollbarStyles() {
     style.id = 'oasa-popup-scrollbar-style';
     style.textContent = `
         /* Firefox */
-        #oasa-popup-content { scrollbar-width: thin; scrollbar-color: #1a4bd6 transparent; }
+        #oasa-popup-content { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.25) transparent; }
         /* WebKit */
         #oasa-popup-content::-webkit-scrollbar { width: 6px; }
         #oasa-popup-content::-webkit-scrollbar-track { background: transparent; }
-        #oasa-popup-content::-webkit-scrollbar-thumb { background-color: #1a4bd6; border-radius: 6px; }
-        #oasa-popup-content::-webkit-scrollbar-thumb:hover { background-color: #2a5cf0; }
+        #oasa-popup-content::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.25); border-radius: 6px; }
+        #oasa-popup-content::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.4); }
     `;
     document.head.appendChild(style);
 }
 function getLineNameAndNumber(routecode) {
-	const key = String(routecode || '');
-	if (!key) return Promise.resolve('');
-	if (routeNameCache[key]) return Promise.resolve(routeNameCache[key]);
-	return new Promise((resolve) => {
-		const url = 'https://telematics.oasa.gr/api/?act=getRouteName';
-		const options = {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: `p1=${encodeURIComponent(key)}`
-		};
-		chrome.runtime.sendMessage(
-			{ type: 'OASA_FETCH', payload: { url, options } },
-			(resp) => {
-				if (!resp || !resp.ok) {
-					return resolve('');
-				}
-				const data = resp.data;
-				let name = '';
-				if (Array.isArray(data) && data.length > 0) {
-					name = data[0] && (data[0].route_departure_eng || data[0].route_departure) || '';
-				}
-				routeNameCache[key] = name;
-				resolve(name);
-			}
-		);
-	});
+    const key = String(routecode || '');
+    if (!key) return Promise.resolve('');
+    if (routeNameCache[key]) return Promise.resolve(routeNameCache[key]);
+    return new Promise((resolve) => {
+        const url = 'https://telematics.oasa.gr/api/?act=getRouteName';
+        const options = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `p1=${encodeURIComponent(key)}`
+        };
+        chrome.runtime.sendMessage(
+            { type: 'OASA_FETCH', payload: { url, options } },
+            (resp) => {
+                if (!resp || !resp.ok) {
+                    return resolve('');
+                }
+                const data = resp.data;
+                let name = '';
+                if (Array.isArray(data) && data.length > 0) {
+                    name = data[0] && (data[0].route_departure_eng || data[0].route_departure) || '';
+                }
+                routeNameCache[key] = name;
+                resolve(name);
+            }
+        );
+    });
 }
+
+let stopRoutesCache = Object.create(null);
+let stopRoutesPromises = Object.create(null);
+function ensureStopRoutes(stopcode) {
+    const key = String(stopcode || '');
+    if (!key) return Promise.resolve(null);
+    if (stopRoutesCache[key]) return Promise.resolve(stopRoutesCache[key]);
+    if (stopRoutesPromises[key]) return stopRoutesPromises[key];
+
+    const url = `https://telematics.oasa.gr/api/?act=webRoutesForStop&p1=${key}`;
+    const p = new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+            { type: 'OASA_FETCH', payload: { url, options: { method: 'GET' } } },
+            (resp) => {
+                if (resp && resp.ok && Array.isArray(resp.data)) {
+                    const map = Object.create(null);
+                    resp.data.forEach(r => map[r.RouteCode] = r);
+                    stopRoutesCache[key] = map;
+                    resolve(map);
+                } else {
+                    resolve(null);
+                }
+            }
+        );
+    });
+    stopRoutesPromises[key] = p;
+    return p;
+}
+
 function fetchAndShowArrivals(stopcode) {
     oasaCurrentStop = stopcode;
     const url = `https://telematics.oasa.gr/api/?act=getStopArrivals&p1=${stopcode}`;
@@ -345,30 +384,39 @@ function fetchAndShowArrivals(stopcode) {
             }
             let html = "No current arrivals";
             if (Array.isArray(arrivals) && arrivals.length > 0) {
-                Promise.all(arrivals.map(async (a) => {
-                    const minutes = a && a.btime2 ? a.btime2 : '';
-                    const name = await getLineNameAndNumber(a.route_code);
-                    const displayName = name || (a && a.route_code) || '';
-                    return `
-                    <div style="padding:16px 12px 10px 12px; margin:0; border-bottom:1px solid #1a287c; background:#0130a6; height:2em;display:flex;align-items:center; justify-content:space-between;position:relative;">
-                        <span style="font-size:0.8em; font-weight:bold;">${displayName}</span>
-                        <div style="float:right; text-align:right; color:${Number(minutes) < 5 ? '#ff3b3b' : '#00ec6e'}; font-size:2em; font-weight:600;">${minutes}'</div>
-                    </div>`;
-                }))
-                .then(rows => {
-                    showArrivalsPopup(stopcode, rows.join(""));
-                })
-                .catch(() => {
-                    html = arrivals.map((a) => {
+                ensureStopRoutes(stopcode).then((stopRoutesMap) => {
+                    Promise.all(arrivals.map(async (a) => {
                         const minutes = a && a.btime2 ? a.btime2 : '';
-                        const fallback = (a && a.route_code) || '';
+                        let displayName = '';
+                        if (stopRoutesMap && stopRoutesMap[a.route_code]) {
+                            const rInfo = stopRoutesMap[a.route_code];
+                            const descr = rInfo.RouteDescrEng || rInfo.RouteDescr || '';
+                            displayName = `${rInfo.LineID} ${descr}`;
+                        } else {
+                            const name = await getLineNameAndNumber(a.route_code);
+                            displayName = name || (a && a.route_code) || '';
+                        }
                         return `
-                        <div style="padding:16px 12px 10px 12px; margin:0; border-bottom:1px solid #1a287c; background:#0130a6; height:2em;display:flex;align-items:center; justify-content:space-between;position:relative;">
-                            <span style="font-size:0.8em; font-weight:bold;">${fallback}</span>
-                            <div style="float:right; text-align:right; color:#00ec6e; font-size:2em; font-weight:600;">${minutes}'</div>
+                        <div style="padding:16px 12px 10px 12px; margin:0; border-bottom:1px solid rgba(255, 255, 255, 0.12); background:rgba(255, 255, 255, 0.02); height:2em;display:flex;align-items:center; justify-content:space-between;position:relative;">
+                            <span style="font-size:0.8em; font-weight:bold;">${displayName}</span>
+                            <div style="float:right; text-align:right; color:${Number(minutes) < 5 ? '#ff3b3b' : '#00ec6e'}; font-size:2em; font-weight:600;">${minutes}'</div>
                         </div>`;
-                    }).join("");
-                    showArrivalsPopup(stopcode, html);
+                    }))
+                        .then(rows => {
+                            showArrivalsPopup(stopcode, rows.join(""));
+                        })
+                        .catch(() => {
+                            html = arrivals.map((a) => {
+                                const minutes = a && a.btime2 ? a.btime2 : '';
+                                const fallback = (a && a.route_code) || '';
+                                return `
+                            <div style="padding:16px 12px 10px 12px; margin:0; border-bottom:1px solid rgba(255, 255, 255, 0.12); background:rgba(255, 255, 255, 0.02); height:2em;display:flex;align-items:center; justify-content:space-between;position:relative;">
+                                <span style="font-size:0.8em; font-weight:bold;">${fallback}</span>
+                                <div style="float:right; text-align:right; color:#00ec6e; font-size:2em; font-weight:600;">${minutes}'</div>
+                            </div>`;
+                            }).join("");
+                            showArrivalsPopup(stopcode, html);
+                        });
                 });
                 return;
             }
